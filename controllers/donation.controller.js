@@ -11,7 +11,7 @@ const AppError = require('../utils/AppError');
  */
 const createDonation = async (req, res, next) => {
   try {
-    const { foodType, quantity, description, freshness, imageUrl, lat, lng } = req.body;
+    const { foodType, quantity, description, expiryHours, imageUrl, lat, lng } = req.body;
 
     const donation = {
       donorId: req.user.uid,
@@ -19,12 +19,11 @@ const createDonation = async (req, res, next) => {
       foodType,
       quantity: parseFloat(quantity),
       description: description || '',
-      freshness: parseInt(freshness) || 5,
       imageUrl: imageUrl || '',
       status: 'pending_verification',
       ngoId: null,
       timestamp: new Date().toISOString(),
-      expiryTime: new Date(Date.now() + 1000 * 60 * 60 * 4).toISOString(), // 4 hours
+      expiryTime: new Date(Date.now() + 1000 * 60 * 60 * (parseInt(expiryHours) || 4)).toISOString(),
       lat: lat || 0,
       lng: lng || 0,
     };
@@ -69,12 +68,19 @@ const getDonations = async (req, res, next) => {
         break;
     }
 
-    const snapshot = await query.orderBy('timestamp', 'desc').get();
+    const snapshot = await query.get();
 
-    let donations = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
+    let donations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        expiryTime: data.expiryTime || new Date(new Date(data.timestamp || Date.now()).getTime() + 4 * 60 * 60 * 1000).toISOString()
+      };
+    });
+
+    // Sort by timestamp descending in memory to avoid Firebase composite index errors
+    donations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
     // Additional role-based filtering
     if (req.user.role === 'ngo') {
@@ -138,11 +144,15 @@ const updateDonation = async (req, res, next) => {
       throw new AppError('Cannot update a donation that has already been verified', 400);
     }
 
-    const allowedFields = ['foodType', 'quantity', 'description', 'freshness', 'imageUrl'];
+    const allowedFields = ['foodType', 'quantity', 'description', 'expiryHours', 'imageUrl'];
     const updates = {};
     allowedFields.forEach(field => {
       if (req.body[field] !== undefined) {
-        updates[field] = req.body[field];
+        if (field === 'expiryHours') {
+          updates['expiryTime'] = new Date(Date.now() + 1000 * 60 * 60 * parseInt(req.body[field])).toISOString();
+        } else {
+          updates[field] = req.body[field];
+        }
       }
     });
 

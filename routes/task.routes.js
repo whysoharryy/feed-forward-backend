@@ -6,6 +6,7 @@ const router = express.Router();
 const {
   getTasks,
   acceptTask,
+  generateOtp,
   confirmPickup,
   completeTask,
 } = require('../controllers/task.controller');
@@ -21,6 +22,9 @@ router.get('/', getTasks);
 
 // POST /api/tasks/accept/:taskId
 router.post('/accept/:taskId', acceptTask);
+
+// POST /api/tasks/generate-otp/:taskId
+router.post('/generate-otp/:taskId', generateOtp);
 
 // POST /api/tasks/pickup/:taskId (OTP verification)
 router.post('/pickup/:taskId', confirmPickup);

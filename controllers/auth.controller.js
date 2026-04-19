@@ -45,14 +45,6 @@ const signup = async (req, res, next) => {
       createdAt: new Date().toISOString(),
     };
 
-    // Add role-specific fields
-    if (role === 'donor' || role === 'ngo') {
-      userProfile.trustRating = 80;
-    }
-    if (role === 'volunteer') {
-      userProfile.karma = 0;
-    }
-
     // Store in Firestore using Firebase Auth UID as document ID
     await db.collection('users').doc(uid).set(userProfile);
 

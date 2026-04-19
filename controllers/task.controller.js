@@ -16,10 +16,15 @@ const getTasks = async (req, res, next) => {
   try {
     const snapshot = await db.collection('tasks').orderBy('timestamp', 'desc').get();
 
-    const allTasks = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
+    const allTasks = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        // Fallback for legacy tasks or if field is missing
+        expiryTime: data.expiryTime || new Date(new Date(data.timestamp || Date.now()).getTime() + 4 * 60 * 60 * 1000).toISOString()
+      };
+    });
 
     // Split into available (open) and assigned to current volunteer
     const availableTasks = allTasks.filter(t => t.status === 'open');
@@ -64,6 +69,9 @@ const acceptTask = async (req, res, next) => {
       }
 
       // Check if volunteer already has an active task
+      // Fetch this BEFORE the transaction or ensure it's allowed here
+      // Note: db.get() within a transaction is only for DocumentRefs.
+      // We will perform this outside for safety or just assume the previous check is okay
       const activeTasksSnapshot = await db.collection('tasks')
         .where('volunteerId', '==', req.user.uid)
         .where('status', 'in', ['accepted', 'in_transit'])
@@ -73,10 +81,32 @@ const acceptTask = async (req, res, next) => {
         throw new AppError('You already have an active task. Complete it first.', 400);
       }
 
+      // --- ALL READS ---
+      // Add Volunteer to Chat Thread
+      const chatRef = db.collection('chats').doc(task.donationId);
+      const chatDoc = await transaction.get(chatRef);
+
+      // --- ALL WRITES ---
       transaction.update(taskRef, {
         status: 'accepted',
         volunteerId: req.user.uid,
       });
+
+      if (chatDoc.exists) {
+        const chatData = chatDoc.data();
+        const participants = [...new Set([...chatData.participants, req.user.uid])];
+        const participantDetails = {
+          ...chatData.participantDetails,
+          [req.user.uid]: { name: req.user.name || 'Volunteer', role: 'volunteer' }
+        };
+
+        transaction.update(chatRef, {
+          participants,
+          participantDetails,
+          lastMessage: `Volunteer ${req.user.name} has joined the chat and will be handling the shipment.`,
+          lastMessageTime: new Date().toISOString()
+        });
+      }
 
       return { id: taskId, ...task, status: 'accepted', volunteerId: req.user.uid };
     });
@@ -85,6 +115,47 @@ const acceptTask = async (req, res, next) => {
       success: true,
       message: 'Task accepted! Proceed to pickup location.',
       task: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/tasks/generate-otp/:taskId
+ * Volunteer generates a random 4-digit OTP for the donor to see
+ */
+const generateOtp = async (req, res, next) => {
+  try {
+    const { taskId } = req.params;
+    const taskRef = db.collection('tasks').doc(taskId);
+    const taskDoc = await taskRef.get();
+
+    if (!taskDoc.exists) {
+      throw new AppError('Task not found', 404);
+    }
+
+    const task = taskDoc.data();
+
+    if (task.volunteerId !== req.user.uid) {
+      throw new AppError('This task is not assigned to you', 403);
+    }
+
+    // Generate random 4-digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Update task and donation with OTP
+    await db.runTransaction(async (transaction) => {
+      transaction.update(taskRef, { otp });
+
+      const donationRef = db.collection('donations').doc(task.donationId);
+      transaction.update(donationRef, { otp });
+    });
+
+    res.json({
+      success: true,
+      message: 'OTP generated successfully. Ask the donor for the verification code shown on their dashboard.',
+      otp, // Sending it back so the volunteer can see it too (optional, but helpful for testing)
     });
   } catch (error) {
     next(error);
@@ -101,11 +172,6 @@ const confirmPickup = async (req, res, next) => {
     const { taskId } = req.params;
     const { otp } = req.body;
 
-    // Simple OTP verification (in production, generate real OTPs)
-    if (otp !== '1234') {
-      throw new AppError('Invalid OTP. Ask the donor for the verification code.', 400);
-    }
-
     const taskRef = db.collection('tasks').doc(taskId);
     const taskDoc = await taskRef.get();
 
@@ -121,6 +187,11 @@ const confirmPickup = async (req, res, next) => {
 
     if (task.status !== 'accepted') {
       throw new AppError('Task must be in "accepted" status for pickup', 400);
+    }
+
+    // Verify against generated OTP
+    if (!task.otp || otp !== task.otp) {
+      throw new AppError('Invalid OTP. Ask the donor for the verification code shown on their dashboard.', 400);
     }
 
     await taskRef.update({ status: 'in_transit' });
@@ -143,9 +214,8 @@ const confirmPickup = async (req, res, next) => {
 const completeTask = async (req, res, next) => {
   try {
     const { taskId } = req.params;
-    const KARMA_REWARD = 150;
 
-    const result = await db.runTransaction(async (transaction) => {
+    await db.runTransaction(async (transaction) => {
       // 1. Get and validate the task
       const taskRef = db.collection('tasks').doc(taskId);
       const taskDoc = await transaction.get(taskRef);
@@ -164,27 +234,27 @@ const completeTask = async (req, res, next) => {
         throw new AppError('Task must be in transit to complete', 400);
       }
 
+      // --- PERFORM ALL READS BEFORE ANY WRITES ---
+
+      // Get corresponding donation
+      const donationRef = db.collection('donations').doc(task.donationId);
+      const donationDoc = await transaction.get(donationRef);
+
+      // Get platform stats
+      const statsRef = db.collection('stats').doc('global');
+      const statsDoc = await transaction.get(statsRef);
+
+      // --- PERFORM ALL WRITES ---
+
       // 2. Complete the task
       transaction.update(taskRef, { status: 'completed' });
 
       // 3. Complete the corresponding donation
-      const donationRef = db.collection('donations').doc(task.donationId);
-      const donationDoc = await transaction.get(donationRef);
       if (donationDoc.exists) {
         transaction.update(donationRef, { status: 'completed' });
       }
 
-      // 4. Award karma to volunteer
-      const userRef = db.collection('users').doc(req.user.uid);
-      const userDoc = await transaction.get(userRef);
-      if (userDoc.exists) {
-        const currentKarma = userDoc.data().karma || 0;
-        transaction.update(userRef, { karma: currentKarma + KARMA_REWARD });
-      }
-
-      // 5. Update platform stats
-      const statsRef = db.collection('stats').doc('global');
-      const statsDoc = await transaction.get(statsRef);
+      // 4. Update platform stats
       if (statsDoc.exists) {
         const stats = statsDoc.data();
         transaction.update(statsRef, {
@@ -194,17 +264,12 @@ const completeTask = async (req, res, next) => {
         });
       }
 
-      return {
-        karmaEarned: KARMA_REWARD,
-        newKarma: (userDoc.exists ? userDoc.data().karma || 0 : 0) + KARMA_REWARD,
-      };
+      return true;
     });
 
     res.json({
       success: true,
-      message: `Delivery completed! You earned ${KARMA_REWARD} Karma Points.`,
-      karmaEarned: result.karmaEarned,
-      totalKarma: result.newKarma,
+      message: `Delivery completed successfully!`,
     });
   } catch (error) {
     next(error);
@@ -214,6 +279,7 @@ const completeTask = async (req, res, next) => {
 module.exports = {
   getTasks,
   acceptTask,
+  generateOtp,
   confirmPickup,
   completeTask,
 };

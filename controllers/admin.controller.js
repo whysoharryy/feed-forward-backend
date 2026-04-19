@@ -14,13 +14,15 @@ const getPendingDonations = async (req, res, next) => {
     const snapshot = await db
       .collection('donations')
       .where('status', '==', 'pending_verification')
-      .orderBy('timestamp', 'desc')
       .get();
 
     const donations = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
     }));
+
+    // Sort by timestamp descending in memory
+    donations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
     res.json({
       success: true,

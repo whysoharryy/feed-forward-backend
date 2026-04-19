@@ -3,7 +3,7 @@
  */
 const express = require('express');
 const router = express.Router();
-const { claimDonation } = require('../controllers/ngo.controller');
+const { claimDonation, submitFeedback } = require('../controllers/ngo.controller');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
@@ -13,5 +13,8 @@ router.use(authorize('ngo'));
 
 // POST /api/ngo/claim/:donationId
 router.post('/claim/:donationId', claimDonation);
+
+// POST /api/ngo/feedback/:donationId
+router.post('/feedback/:donationId', submitFeedback);
 
 module.exports = router;

@@ -20,7 +20,7 @@ const createDonationSchema = Joi.object({
   foodType: Joi.string().required(),
   quantity: Joi.number().min(0.5).required(),
   description: Joi.string().allow('').optional(),
-  freshness: Joi.number().min(1).max(10).optional(),
+  expiryHours: Joi.number().min(1).max(168).optional(), // Max 1 week
   imageUrl: Joi.string().allow('').optional(),
   lat: Joi.number().optional(),
   lng: Joi.number().optional(),

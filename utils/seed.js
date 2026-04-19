@@ -34,10 +34,10 @@ const DEMO_USERS = [
 ];
 
 const INITIAL_STATS = {
-  totalFoodSaved: 12500,
-  mealsServed: 41600,
-  activeVolunteers: 128,
-  co2Reduced: 32000,
+  totalFoodSaved: 0,
+  mealsServed: 0,
+  activeVolunteers: 0,
+  co2Reduced: 0,
 };
 
 async function seed() {
@@ -68,16 +68,6 @@ async function seed() {
         role: user.role,
         createdAt: new Date().toISOString(),
       };
-
-      if (user.role === 'admin') {
-        profile.trustRating = 100;
-      } else if (user.role === 'donor') {
-        profile.trustRating = 95;
-      } else if (user.role === 'ngo') {
-        profile.trustRating = 98;
-      } else if (user.role === 'volunteer') {
-        profile.karma = 450;
-      }
 
       await db.collection('users').doc(userRecord.uid).set(profile, { merge: true });
       console.log(`  → Firestore profile saved for ${user.name} (${user.role})\n`);

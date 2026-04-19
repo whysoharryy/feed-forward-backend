@@ -12,8 +12,13 @@ const {
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
-// All admin routes require authentication + admin role
+// Require authentication for all
 router.use(authenticate);
+
+// Publicly available platform stats (for all authenticated roles)
+router.get('/stats', getStats);
+
+// Routes requiring admin authorization
 router.use(authorize('admin'));
 
 // GET /api/admin/pending
@@ -24,8 +29,5 @@ router.put('/verify/:id', verifyDonation);
 
 // GET /api/admin/users
 router.get('/users', getAllUsers);
-
-// GET /api/admin/stats
-router.get('/stats', getStats);
 
 module.exports = router;
